@@ -1,0 +1,5 @@
+project_id = "TWOJ_PROJECT_ID"
+region     = "europe-west1"
+
+web_image      = "europe-west1-docker.pkg.dev/TWOJ_PROJECT_ID/cloud-sentinel/web:latest"
+function_image = "europe-west1-docker.pkg.dev/TWOJ_PROJECT_ID/cloud-sentinel/monitoring:latest"

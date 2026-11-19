@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/Elementy rozwiązania/">
+    <File Path="ci.yml" />
+    <File Path="Dockerfile.functions" />
+    <File Path="Dockerfile.web" />
+    <File Path="infra/main.tf" />
+    <File Path="infra/outputs.tf" />
+    <File Path="infra/variables.tf" />
+    <File Path="terraform.tfvars.example" />
+  </Folder>
+  <Project Path="CloudSentinel.Core/CloudSentinel.Core.csproj" />
+  <Project Path="CloudSentinel.Functions/CloudSentinel.Functions.csproj" />
+  <Project Path="CloudSentinel.Tests/CloudSentinel.Tests.csproj" />
+  <Project Path="CloudSentinel.Web/CloudSentinel.Web.csproj" />
+</Solution>

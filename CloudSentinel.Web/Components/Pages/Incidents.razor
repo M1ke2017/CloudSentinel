@@ -1,0 +1,87 @@
+﻿@page "/incidents"
+@using CloudSentinel.Core.Models
+@inject CloudSentinel.Core.Services.IncidentRepository Repository
+@inject CloudSentinel.Core.Services.MonitoringRunner Runner
+@inject Microsoft.Extensions.Options.IOptions<List<MonitoredService>> MonitoringOptions
+@using Google.Cloud.Firestore
+@inject IConfiguration Configuration
+@rendermode InteractiveServer
+
+<PageTitle>Incidents - CloudSentinel</PageTitle>
+
+<button class="btn btn-primary mb-3" @onclick="RunMonitoring">
+    Sprawdź stan usług
+</button>
+@if (message is not null)
+{
+    <p class="alert alert-info">@message</p>
+}
+
+<h3>Historia incydentów</h3>
+
+<table class="table">
+    <thead>
+        <tr>
+            <th>Data</th>
+            <th>Usługa</th>
+            <th>Status</th>
+            <th>Akcja</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var incident in incidents)
+        {
+            <tr>
+                <td>@incident.CreatedAt.ToLocalTime()</td>
+                <td>@incident.ServiceName</td>
+                <td>@incident.Status</td>
+                <td>@incident.Action</td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+@code {
+    private string? message;
+    private List<Incident> incidents = [];
+
+    
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadIncidentsAsync();
+    }
+
+    private async Task LoadIncidentsAsync()
+    {
+        var projectId = Configuration["GoogleCloud:ProjectId"];
+
+        if (string.IsNullOrWhiteSpace(projectId))
+        {
+            incidents = Repository.GetAll();
+            return;
+        }
+
+        var db = FirestoreDb.Create(projectId);
+
+        var snapshot = await db.Collection("incidents")
+            .OrderByDescending("CreatedAt")
+            .GetSnapshotAsync();
+
+        incidents = snapshot.Documents.Select(doc => new Incident
+        {
+            Id = Guid.Parse(doc.GetValue<string>("Id")),
+            ServiceName = doc.GetValue<string>("ServiceName"),
+            Status = doc.GetValue<string>("Status"),
+            Action = doc.GetValue<string>("Action"),
+            CreatedAt = doc.GetValue<Timestamp>("CreatedAt").ToDateTime()
+        }).ToList();
+    }
+
+    private async Task RunMonitoring()
+    {
+        foreach (var service in MonitoringOptions.Value)
+        { await Runner.RunAsync(service); }
+        await LoadIncidentsAsync();
+        message = "Kontrola zakończona. Liczba incydentów: " + incidents.Count;
+    }
+}

@@ -1,0 +1,9 @@
+**/bin/
+**/obj/
+.vs/
+**/TestResults/
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars
+!**/*.tfvars.example

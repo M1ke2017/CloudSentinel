@@ -1,0 +1,28 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+	<OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.Cloud.Firestore" Version="4.6.0" />
+    <PackageReference Include="Google.Cloud.Functions.Framework" Version="3.0.1" />
+    <PackageReference Include="Google.Cloud.Functions.Hosting" Version="3.0.1" />
+    <PackageReference Include="Google.Cloud.Monitoring.V3" Version="3.16.0" />
+    <PackageReference Include="Google.Cloud.Run.V2" Version="2.20.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CloudSentinel.Core\CloudSentinel.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>
