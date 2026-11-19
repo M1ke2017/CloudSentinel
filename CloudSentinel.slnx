@@ -6,9 +6,9 @@
     <File Path="Dockerfile.web" />
     <File Path="infra/main.tf" />
     <File Path="infra/outputs.tf" />
+    <File Path="infra/terraform.tfvars" />
     <File Path="infra/variables.tf" />
     <File Path="README.md" />
-    <File Path="terraform.tfvars" />
     <File Path="terraform.tfvars.example" />
   </Folder>
   <Project Path="CloudSentinel.Core/CloudSentinel.Core.csproj" />

@@ -1,7 +1,478 @@
-﻿@page "/"
+@page "/"
+@rendermode InteractiveServer
+@layout SentinelLayout
+@using System.Net
+@using System.Net.Http.Headers
+@using System.Text.Json
+@using Google.Apis.Auth.OAuth2
+@using Google.Cloud.Firestore
+@using Microsoft.AspNetCore.Components
+@inject IConfiguration Configuration
+@inject IHttpClientFactory HttpClients
 
-<PageTitle>Home</PageTitle>
+<PageTitle>CloudSentinel | Pulpit</PageTitle>
+<HeadContent>
+    <link rel="stylesheet" href="cloudsentinel-dashboard.css" />
+</HeadContent>
 
-<h1>Hello, world!</h1>
+<div class="sentinel-shell">
+    <aside class="sentinel-sidebar">
+        <div class="sentinel-brand">
+            <div class="brand-icon">◆</div>
+            <div><strong>CloudSentinel</strong><small>Cloud operations</small></div>
+        </div>
+        <nav class="sentinel-nav" aria-label="Nawigacja">
+            <a class="nav-selected" href="/">◫ <span>Pulpit</span></a>
+            <a href="#services">▤ <span>Usługi Cloud Run</span></a>
+            <a href="#workflow">⌁ <span>Przepływ kontroli</span></a>
+            <a href="#runs">◷ <span>Wykonania i testy</span></a>
+            <a href="#incidents">⚑ <span>Incydenty</span></a>
+        </nav>
+        <div class="sidebar-bottom">
+            <span class="sidebar-label">ŚRODOWISKO</span>
+            <strong>@ProjectId</strong>
+            <small>@Region · Google Cloud</small>
+            <span class="sidebar-note">Automatyczny rollback jest wyłączony.</span>
+        </div>
+    </aside>
 
-Welcome to your new app.
+    <main class="sentinel-main">
+        <header class="page-top">
+            <div>
+                <span class="eyebrow">OPERATIONS / OVERVIEW</span>
+                <h1>Centrum sterowania</h1>
+                <p>Monitorowanie i kontrola usług Google Cloud w jednym miejscu.</p>
+            </div>
+            <div class="top-actions">
+                <span class="pill @(HasError ? "pill-danger" : "pill-neutral")">@(HasError ? "Wymaga uwagi" : "Google Cloud")</span>
+                <button class="btn btn-secondary" @onclick="RefreshAsync" disabled="@Busy">↻ Odśwież dane</button>
+            </div>
+        </header>
+
+        @if (!string.IsNullOrWhiteSpace(Message))
+        {
+            <div class="notice @(HasError ? "notice-error" : "notice-ok")" role="status">@Message</div>
+        }
+
+        <section class="metric-grid" aria-label="Stan systemu">
+            <div class="metric-card"><span class="metric-label">Cloud Run · Web</span><strong class="metric-value">@WebState</strong><small>@WebRevision</small></div>
+            <div class="metric-card"><span class="metric-label">Cloud Run · Monitoring</span><strong class="metric-value">@MonitorState</strong><small>@MonitorRevision</small></div>
+            <div class="metric-card"><span class="metric-label">Cloud Scheduler</span><strong class="metric-value">@SchedulerState</strong><small>Harmonogram: co 5 minut</small></div>
+            <div class="metric-card"><span class="metric-label">Incydenty w Firestore</span><strong class="metric-value">@(IncidentsLoaded ? IncidentCount.ToString() : "—")</strong><small>Ostatnie zapisane zdarzenia</small></div>
+        </section>
+
+        <div class="content-grid">
+            <div class="main-column">
+                <section class="panel" id="workflow">
+                    <div class="panel-heading"><div><span class="eyebrow">CONTROL CENTER</span><h2>Uruchamianie kontroli</h2><p>Każde działanie wywołuje prawdziwe API Google Cloud.</p></div><span class="pill pill-neutral">Ręcznie</span></div>
+                    <div class="action-bar">
+                        <button class="btn btn-primary" @onclick="RunMonitoringAsync" disabled="@Busy">▶ Uruchom monitoring</button>
+                        <button class="btn btn-secondary" @onclick="RunVerificationAsync" disabled="@Busy">✓ Test przepływu</button>
+                        <button class="btn btn-secondary" @onclick="RefreshAsync" disabled="@Busy">↻ Pobierz stan</button>
+                    </div>
+                    <p class="action-hint">Test przepływu sprawdza Cloud Run, wywołuje funkcję monitorującą i odświeża incydenty. Nie zmienia ruchu ani nie wywołuje rollbacku.</p>
+                    <div class="timeline">
+                        @if (Steps.Count == 0)
+                        {
+                            <div class="empty-inline">Uruchom monitoring lub test, aby zobaczyć przebieg operacji krok po kroku.</div>
+                        }
+                        @foreach (var item in Steps)
+                        {
+                            <div class="timeline-item">
+                                <div class="step-marker @(item.State == "OK" ? "step-ok" : item.State == "Błąd" ? "step-error" : "step-info")">@(item.State == "OK" ? "✓" : item.State == "Błąd" ? "!" : "•")</div>
+                                <div class="step-body"><div class="step-title"><strong>@item.Title</strong><span>@item.Time.ToLocalTime().ToString("HH:mm:ss")</span></div><p>@item.Description</p></div>
+                            </div>
+                        }
+                    </div>
+                </section>
+
+                <section class="panel" id="services">
+                    <div class="panel-heading"><div><span class="eyebrow">GOOGLE CLOUD RUN</span><h2>Usługi i rewizje</h2></div></div>
+                    <div class="service-row"><div class="service-identity"><span class="service-symbol">W</span><div><strong>cloud-sentinel-web</strong><small>@WebRevision</small></div></div><span class="status-chip">@WebState</span></div>
+                    <div class="service-row"><div class="service-identity"><span class="service-symbol">M</span><div><strong>cloud-sentinel-monitoring</strong><small>@MonitorRevision</small></div></div><span class="status-chip">@MonitorState</span></div>
+                    <div class="revision-info"><span>Ruch Web</span><strong>@TrafficDescription</strong></div>
+                    <div class="revision-info"><span>URL Web</span><span class="url-text">@WebUrl</span></div>
+                </section>
+
+                <section class="panel" id="runs">
+                    <div class="panel-heading"><div><span class="eyebrow">REAL EXECUTIONS · FIRESTORE</span><h2>Historia wykonań i testów</h2><p>Potwierdzone wyniki zapisane przez CloudSentinel.Functions, również dla Healthy.</p></div><button class="btn btn-small btn-secondary" @onclick="RefreshAsync" disabled="@Busy">Odśwież</button></div>
+                    @if (Runs.Count == 0)
+                    {
+                        <div class="empty-inline">Brak zapisanych wykonań. Wdrożenie Functions z obsługą monitoring_runs jest wymagane do gromadzenia historii.</div>
+                    }
+                    else
+                    {
+                        <div class="table-wrap"><table class="incident-table"><thead><tr><th>Rozpoczęcie</th><th>Zakończenie</th><th>Czas</th><th>Źródło</th><th>Wynik</th><th>Incydenty</th><th></th></tr></thead><tbody>
+                            @foreach (var run in Runs)
+                            {
+                                <tr><td>@run.Started</td><td>@run.Finished</td><td>@run.Duration</td><td>@run.Source</td><td><span class="run-state @RunStateClass(run.Result)">@run.Result</span></td><td>@run.IncidentCount</td><td><button class="btn btn-small btn-secondary" @onclick="() => SelectedRun = SelectedRun?.Id == run.Id ? null : run">@(SelectedRun?.Id == run.Id ? "Zwiń" : "Przebieg")</button></td></tr>
+                            }
+                        </tbody></table></div>
+                        @if (SelectedRun is not null)
+                        {
+                            <div class="run-details"><strong>Wykonanie @SelectedRun.Id</strong>
+                                @foreach (var step in SelectedRun.Steps)
+                                {
+                                    <div class="run-detail-step">@step</div>
+                                }
+                                @if (SelectedRun.IncidentIds.Count > 0)
+                                {
+                                    <p>Powiązane incydenty: @string.Join(", ", SelectedRun.IncidentIds)</p>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(SelectedRun.Error))
+                                {
+                                    <p class="run-error">Błąd: @SelectedRun.Error</p>
+                                }
+                            </div>
+                        }
+                    }
+                </section>
+
+                <section class="panel" id="incidents">
+                    <div class="panel-heading"><div><span class="eyebrow">FIRESTORE</span><h2>Historia incydentów</h2><p>Dane pobierane z kolekcji <code>incidents</code>.</p></div><button class="btn btn-small btn-secondary" @onclick="LoadIncidentsAsync" disabled="@Busy">Odśwież</button></div>
+                    @if (Incidents.Count == 0)
+                    {
+                        <div class="empty-inline">@(IncidentsLoaded ? "Brak zapisanych incydentów." : "Historia nie została jeszcze pobrana.")</div>
+                    }
+                    else
+                    {
+                        <div class="table-wrap"><table class="incident-table"><thead><tr><th>Data</th><th>Usługa</th><th>Status</th><th>Akcja</th></tr></thead><tbody>
+                            @foreach (var incident in Incidents)
+                            {
+                                <tr><td>@incident.Date</td><td>@incident.Service</td><td><span class="incident-status">@incident.Status</span></td><td>@incident.Action</td></tr>
+                            }
+                        </tbody></table></div>
+                    }
+                </section>
+            </div>
+
+            <div class="side-column">
+                <section class="panel scheduler-panel">
+                    <span class="eyebrow">AUTOMATION</span>
+                    <h2>Cloud Scheduler</h2>
+                    <div class="scheduler-current"><span>Stan zadania</span><strong>@SchedulerState</strong></div>
+                    <div class="scheduler-current"><span>Zadanie</span><strong>cloud-sentinel-check</strong></div>
+                    <div class="scheduler-current"><span>Częstotliwość</span><strong>*/5 * * * *</strong></div>
+                    <div class="scheduler-actions">
+                        <button class="btn btn-primary" @onclick="RunSchedulerNowAsync" disabled="@Busy">▶ Uruchom zadanie</button>
+                        @if (SchedulerState == "PAUSED")
+                        {
+                            <button class="btn btn-secondary" @onclick="ResumeSchedulerAsync" disabled="@Busy">Wznów harmonogram</button>
+                        }
+                        else
+                        {
+                            <button class="btn btn-secondary" @onclick="PauseSchedulerAsync" disabled="@(Busy || SchedulerState != "ENABLED")">Wstrzymaj harmonogram</button>
+                        }
+                    </div>
+                    <small class="muted">Uruchomienie zadania zleca pracę Schedulerowi; wynik kontroli można następnie sprawdzić w historii.</small>
+                </section>
+                <section class="panel safety-panel"><span class="eyebrow">SAFETY</span><h2>Automatyczna remediacja</h2><div class="safety-state">⏸ Wyłączona</div><p>Automatyczny Traffic Rollback nie został zweryfikowany w GCP. Panel nie udostępnia niebezpiecznego uruchamiania rollbacku.</p></section>
+                <section class="panel"><span class="eyebrow">LAST SYNC</span><h2>Stan odczytu</h2><p class="last-sync">@(LastRefresh is null ? "Brak aktualizacji" : LastRefresh.Value.ToLocalTime().ToString("dd.MM.yyyy · HH:mm:ss"))</p><small class="muted">Odczyt statusów z Cloud Run API, Scheduler API i Firestore.</small></section>
+            </div>
+        </div>
+    </main>
+</div>
+
+@code {
+    private readonly List<WorkflowStep> Steps = new();
+    private readonly List<IncidentRow> Incidents = new();
+    private readonly List<RunRow> Runs = new();
+    private RunRow? SelectedRun;
+    private bool Busy;
+    private bool HasError;
+    private bool IncidentsLoaded;
+    private string Message = "";
+    private string WebState = "Nie sprawdzono";
+    private string MonitorState = "Nie sprawdzono";
+    private string SchedulerState = "Nie sprawdzono";
+    private string WebRevision = "Brak danych o rewizji";
+    private string MonitorRevision = "Brak danych o rewizji";
+    private string TrafficDescription = "Brak danych";
+    private string WebUrl = "—";
+    private DateTimeOffset? LastRefresh;
+    private int IncidentCount;
+
+    private string ProjectId =>
+        string.IsNullOrWhiteSpace(Configuration["GoogleCloud:ProjectId"])
+            ? "cloudsentinel-515210"
+            : Configuration["GoogleCloud:ProjectId"]!;
+
+    private string Region =>
+        string.IsNullOrWhiteSpace(Configuration["GoogleCloud:Region"])
+            ? "europe-west1"
+            : Configuration["GoogleCloud:Region"]!;
+    private const string WebService = "cloud-sentinel-web";
+    private const string MonitoringService = "cloud-sentinel-monitoring";
+    private const string SchedulerJob = "cloud-sentinel-check";
+
+    protected override async Task OnInitializedAsync() => await RefreshAsync();
+
+    private async Task RefreshAsync()
+    {
+        if (Busy) return;
+        Busy = true;
+        HasError = false;
+        Message = "";
+        try
+        {
+            await RefreshStateCoreAsync();
+            Message = "Dane odczytane z Google Cloud.";
+        }
+        catch (Exception ex)
+        {
+            HasError = true;
+            Message = $"Nie udało się pobrać danych: {ex.Message}";
+        }
+        finally { Busy = false; }
+    }
+
+    private async Task RefreshStateCoreAsync()
+    {
+        var web = await ReadCloudRunServiceAsync(WebService);
+        var monitor = await ReadCloudRunServiceAsync(MonitoringService);
+        WebState = web.Ready ? "Ready" : "Not ready";
+        MonitorState = monitor.Ready ? "Ready" : "Not ready";
+        WebRevision = web.Revision;
+        MonitorRevision = monitor.Revision;
+        TrafficDescription = web.Traffic;
+        WebUrl = web.Url;
+        var scheduler = await GoogleApiAsync(HttpMethod.Get, $"https://cloudscheduler.googleapis.com/v1/projects/{ProjectId}/locations/{Region}/jobs/{SchedulerJob}");
+        using (scheduler) SchedulerState = scheduler.RootElement.TryGetProperty("state", out var state) ? state.GetString() ?? "Nieznany" : "Nieznany";
+        await ReadIncidentsCoreAsync();
+        await ReadRunsCoreAsync();
+        LastRefresh = DateTimeOffset.UtcNow;
+    }
+
+    private async Task RunMonitoringAsync()
+    {
+        if (Busy) return;
+        Busy = true;
+        HasError = false;
+        Message = "";
+        Steps.Clear();
+        try
+        {
+            AddStep("Start kontroli", "Żądanie ręcznej kontroli CloudSentinel.Functions.", "Info");
+            var direct = await InvokeMonitoringCoreAsync();
+            AddStep("Funkcja monitorująca", direct
+                ? "Functions zakończyło wywołanie i zwróciło wynik."
+                : "Cloud Scheduler przyjął żądanie uruchomienia. Wynik kontroli będzie dostępny w logach i Firestore.", "OK");
+            await ReadIncidentsCoreAsync();
+            await ReadRunsCoreAsync();
+            AddStep("Firestore", $"Odczytano {Incidents.Count} ostatnich dokumentów (stan w chwili odczytu).", "OK");
+            Message = direct
+                ? "Kontrola zakończona; odświeżono historię incydentów."
+                : "Zlecono kontrolę przez Cloud Scheduler. Nie jest to jeszcze potwierdzenie zakończenia monitoringu.";
+        }
+        catch (Exception ex) { Fail("Kontrola", ex); }
+        finally { Busy = false; }
+    }
+
+    private async Task RunVerificationAsync()
+    {
+        if (Busy) return;
+        Busy = true;
+        HasError = false;
+        Message = "";
+        Steps.Clear();
+        try
+        {
+            AddStep("Start testu", "Rozpoczęto test bez zmiany konfiguracji ruchu.", "Info");
+            var web = await ReadCloudRunServiceAsync(WebService);
+            AddStep("Cloud Run", $"Web: {(web.Ready ? "Ready" : "Not ready")}, rewizja: {web.Revision}.", web.Ready ? "OK" : "Błąd");
+            if (!web.Ready) throw new InvalidOperationException("Cloud Run Web nie jest gotowy.");
+            var direct = await InvokeMonitoringCoreAsync();
+            AddStep("Monitoring Functions", direct
+                ? "Funkcja zakończyła kontrolę."
+                : "Zlecono uruchomienie przez Cloud Scheduler; wynik funkcji jeszcze niepotwierdzony.", "OK");
+            await ReadIncidentsCoreAsync();
+            await ReadRunsCoreAsync();
+            AddStep("Firestore", $"Odczytano {Incidents.Count} ostatnich dokumentów (bieżący stan).", "OK");
+            LastRefresh = DateTimeOffset.UtcNow;
+            Message = direct
+                ? "Test przepływu zakończony pomyślnie."
+                : "Test częściowy: Cloud Run odczytany, Scheduler przyjął zlecenie, Firestore odczytany. Sprawdź później wynik kontroli.";
+        }
+        catch (Exception ex) { Fail("Test przepływu", ex); }
+        finally { Busy = false; }
+    }
+
+    private async Task<bool> InvokeMonitoringCoreAsync()
+    {
+        var credential = await GoogleCredential.GetApplicationDefaultAsync();
+
+        // Local ADC from `gcloud auth application-default login` uses UserCredential,
+        // which cannot mint the OIDC ID token required by a private Cloud Run service.
+        // Instead, invoke the existing authenticated Cloud Scheduler job once.
+        if (credential.UnderlyingCredential is UserCredential)
+        {
+            using var response = await GoogleApiAsync(
+                HttpMethod.Post,
+                $"https://cloudscheduler.googleapis.com/v1/projects/{ProjectId}/locations/{Region}/jobs/{SchedulerJob}:run",
+                "{}");
+            AddStep("Cloud Scheduler", "Przyjęto żądanie uruchomienia zadania (bez oczekiwania na wynik Functions).", "OK");
+            return false;
+        }
+
+        var service = await ReadCloudRunServiceAsync(MonitoringService);
+        if (string.IsNullOrWhiteSpace(service.Url) || service.Url == "—")
+            throw new InvalidOperationException("Brak adresu usługi monitoring.");
+
+        var oidcToken = await credential.GetOidcTokenAsync(
+            OidcTokenOptions.FromTargetAudience(service.Url.TrimEnd('/')));
+        var jwt = await oidcToken.GetAccessTokenAsync();
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, service.Url);
+        request.Headers.Add("X-CloudSentinel-RunId", Guid.NewGuid().ToString("D"));
+        request.Headers.Add("X-CloudSentinel-Source", "Dashboard");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
+        using var client = HttpClients.CreateClient();
+        client.Timeout = TimeSpan.FromSeconds(90);
+        using var responseDirect = await client.SendAsync(request);
+        var body = await responseDirect.Content.ReadAsStringAsync();
+        if (!responseDirect.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Functions HTTP {(int)responseDirect.StatusCode}: {body}");
+        AddStep("Wynik monitoringu", body, "OK");
+        return true;
+    }
+
+    private async Task RunSchedulerNowAsync() => await SchedulerActionAsync("run", "Zlecono ręczne uruchomienie zadania Scheduler.");
+    private async Task PauseSchedulerAsync() => await SchedulerActionAsync("pause", "Wstrzymano harmonogram.");
+    private async Task ResumeSchedulerAsync() => await SchedulerActionAsync("resume", "Wznowiono harmonogram.");
+
+    private async Task SchedulerActionAsync(string operation, string success)
+    {
+        if (Busy) return;
+        Busy = true;
+        HasError = false;
+        Steps.Clear();
+        try
+        {
+            AddStep("Cloud Scheduler", $"Wysłano polecenie {operation}.", "Info");
+            using var _ = await GoogleApiAsync(HttpMethod.Post, $"https://cloudscheduler.googleapis.com/v1/projects/{ProjectId}/locations/{Region}/jobs/{SchedulerJob}:{operation}", "{}");
+            AddStep("Cloud Scheduler", success, "OK");
+            using var job = await GoogleApiAsync(HttpMethod.Get, $"https://cloudscheduler.googleapis.com/v1/projects/{ProjectId}/locations/{Region}/jobs/{SchedulerJob}");
+            SchedulerState = job.RootElement.TryGetProperty("state", out var state) ? state.GetString() ?? "Nieznany" : "Nieznany";
+            Message = success;
+        }
+        catch (Exception ex) { Fail("Cloud Scheduler", ex); }
+        finally { Busy = false; }
+    }
+
+    private async Task LoadIncidentsAsync()
+    {
+        if (Busy) return;
+        Busy = true;
+        HasError = false;
+        try { await ReadIncidentsCoreAsync(); Message = "Historia incydentów odświeżona."; }
+        catch (Exception ex) { HasError = true; Message = $"Firestore: {ex.Message}"; }
+        finally { Busy = false; }
+    }
+
+    private async Task ReadIncidentsCoreAsync()
+    {
+        var db = FirestoreDb.Create(ProjectId);
+        var snapshot = await db.Collection("incidents").Limit(20).GetSnapshotAsync();
+        Incidents.Clear();
+        foreach (var doc in snapshot.Documents)
+        {
+            var record = doc.ToDictionary();
+            static string Field(Dictionary<string, object> fields, string name) => fields.TryGetValue(name, out var value) ? value?.ToString() ?? "—" : "—";
+            var date = record.TryGetValue("CreatedAt", out var raw) && raw is Timestamp ts
+                ? ts.ToDateTime().ToLocalTime().ToString("dd.MM.yyyy HH:mm") : Field(record, "CreatedAt");
+            Incidents.Add(new IncidentRow(date, Field(record, "ServiceName"), Field(record, "Status"), Field(record, "Action")));
+        }
+        IncidentCount = Incidents.Count;
+        IncidentsLoaded = true;
+    }
+
+    private static string RunStateClass(string result) => result switch
+    {
+        "Healthy" => "run-healthy",
+        "Unhealthy" => "run-unhealthy",
+        _ => "run-failed"
+    };
+
+    private async Task ReadRunsCoreAsync()
+    {
+        var db = FirestoreDb.Create(ProjectId);
+        var snapshot = await db.Collection("monitoring_runs")
+            .OrderByDescending("StartedAt")
+            .Limit(30)
+            .GetSnapshotAsync();
+        Runs.Clear();
+        foreach (var document in snapshot.Documents)
+        {
+            var map = document.ToDictionary();
+            static string Text(Dictionary<string, object> d, string key) =>
+                d.TryGetValue(key, out var value) ? value?.ToString() ?? "—" : "—";
+            static string Date(Dictionary<string, object> d, string key) =>
+                d.TryGetValue(key, out var value) && value is Timestamp timestamp
+                    ? timestamp.ToDateTime().ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss") : "—";
+            static List<string> Strings(Dictionary<string, object> d, string key) =>
+                d.TryGetValue(key, out var value) && value is IEnumerable<object> values
+                    ? values.Select(v => v?.ToString() ?? "").ToList() : new List<string>();
+            var incidents = Strings(map, "IncidentIds");
+            Runs.Add(new RunRow(document.Id, Date(map, "StartedAt"), Date(map, "FinishedAt"),
+                Text(map, "DurationMs") + " ms", Text(map, "Source"), Text(map, "Result"),
+                incidents.Count, incidents, Strings(map, "Steps"), Text(map, "Error") == "—" ? "" : Text(map, "Error")));
+        }
+        if (SelectedRun is not null) SelectedRun = Runs.FirstOrDefault(r => r.Id == SelectedRun.Id);
+    }
+
+    private async Task<CloudRunInfo> ReadCloudRunServiceAsync(string name)
+    {
+        using var result = await GoogleApiAsync(HttpMethod.Get, $"https://run.googleapis.com/v2/projects/{ProjectId}/locations/{Region}/services/{name}");
+        var root = result.RootElement;
+        var revisionFull = root.TryGetProperty("latestReadyRevision", out var rev) ? rev.GetString() ?? "—" : "—";
+        var revision = revisionFull.Split('/').Last();
+        var url = root.TryGetProperty("uri", out var uri) ? uri.GetString() ?? "—" : "—";
+        // Cloud Run v2 can omit the Ready condition in some API responses.
+        // A latestReadyRevision is a reliable positive indicator of a ready revision.
+        var ready = !string.IsNullOrWhiteSpace(revisionFull) && revisionFull != "—";
+        if (root.TryGetProperty("conditions", out var conditions) && conditions.ValueKind == JsonValueKind.Array)
+        {
+            var readyCondition = conditions.EnumerateArray().FirstOrDefault(c =>
+                c.TryGetProperty("type", out var type) && type.GetString() == "Ready");
+            if (readyCondition.ValueKind == JsonValueKind.Object &&
+                readyCondition.TryGetProperty("state", out var state))
+                ready = state.GetString() == "CONDITION_SUCCEEDED";
+        }
+        var traffic = "Brak danych";
+        if (root.TryGetProperty("trafficStatuses", out var statuses) && statuses.ValueKind == JsonValueKind.Array)
+        {
+            traffic = string.Join(" · ", statuses.EnumerateArray().Where(e => e.TryGetProperty("percent", out _)).Select(e =>
+            {
+                var percent = e.GetProperty("percent").ToString();
+                var target = e.TryGetProperty("revision", out var r) ? r.GetString() : "rewizja";
+                return $"{percent}% → {target}";
+            }));
+        }
+        return new CloudRunInfo(ready, revision, url, traffic);
+    }
+
+    private async Task<JsonDocument> GoogleApiAsync(HttpMethod method, string url, string? json = null)
+    {
+        var credentials = await GoogleCredential.GetApplicationDefaultAsync();
+        if (credentials.IsCreateScopedRequired)
+            credentials = credentials.CreateScoped("https://www.googleapis.com/auth/cloud-platform");
+        var token = await ((ITokenAccess)credentials).GetAccessTokenForRequestAsync();
+        using var request = new HttpRequestMessage(method, url);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        if (json is not null) request.Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+        using var client = HttpClients.CreateClient();
+        using var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"Google API HTTP {(int)response.StatusCode}: {body}");
+        return JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
+    }
+
+    private void AddStep(string title, string description, string state) { Steps.Add(new WorkflowStep(title, description, state, DateTimeOffset.UtcNow)); StateHasChanged(); }
+    private void Fail(string operation, Exception ex) { HasError = true; Message = $"{operation}: {ex.Message}"; AddStep(operation, ex.Message, "Błąd"); }
+    private sealed record WorkflowStep(string Title, string Description, string State, DateTimeOffset Time);
+    private sealed record IncidentRow(string Date, string Service, string Status, string Action);
+    private sealed record CloudRunInfo(bool Ready, string Revision, string Url, string Traffic);
+    private sealed record RunRow(string Id, string Started, string Finished, string Duration,
+        string Source, string Result, int IncidentCount, List<string> IncidentIds,
+        List<string> Steps, string Error);
+}
