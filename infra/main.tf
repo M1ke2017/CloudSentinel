@@ -123,3 +123,85 @@ resource "google_project_iam_member" "monitoring_roles" {
   member  = "serviceAccount:${google_service_account.monitoring.email}"
 }
 
+resource "google_cloud_run_v2_service" "web" {
+  name     = "cloud-sentinel-web"
+  project  = var.project_id
+  location = var.region
+  ingress  = "INGRESS_TRAFFIC_ALL"
+
+  template {
+    service_account = google_service_account.web.email
+
+    scaling {
+      min_instance_count = 0
+      max_instance_count = 1
+    }
+
+    containers {
+      image = var.web_image
+
+      ports {
+        container_port = 8080
+      }
+
+      env {
+        name  = "GoogleCloud__ProjectId"
+        value = var.project_id
+      }
+    }
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_cloud_run_v2_service" "monitoring" {
+  name     = "cloud-sentinel-monitoring"
+  project  = var.project_id
+  location = var.region
+  ingress  = "INGRESS_TRAFFIC_ALL"
+
+  template {
+    service_account = google_service_account.monitoring.email
+
+    scaling {
+      min_instance_count = 0
+      max_instance_count = 1
+    }
+
+    containers {
+      image = var.function_image
+
+      ports {
+        container_port = 8080
+      }
+
+      env {
+        name  = "GOOGLE_CLOUD_PROJECT"
+        value = var.project_id
+      }
+
+      env {
+        name  = "MONITORED_HEALTH_URL"
+        value = "${google_cloud_run_v2_service.web.uri}/health"
+      }
+
+      env {
+        name  = "REMEDIATION_ENABLED"
+        value = "false"
+      }
+    }
+
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_cloud_run_v2_service_iam_member" "monitoring_web_invoker" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.web.name
+
+  role   = "roles/run.invoker"
+  member = "serviceAccount:${google_service_account.monitoring.email}"
+}
+

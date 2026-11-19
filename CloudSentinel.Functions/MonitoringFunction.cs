@@ -1,9 +1,10 @@
-﻿
-using System.Text.Json;
+﻿using System.Text.Json;
 using CloudSentinel.Core.Models;
 using CloudSentinel.Core.Services;
 using Google.Cloud.Functions.Framework;
 using Microsoft.AspNetCore.Http;
+using Google.Apis.Auth.OAuth2;
+using System.Net.Http.Headers;
 
 namespace CloudSentinel.Functions;
 
@@ -20,6 +21,16 @@ public class MonitoringFunction : IHttpFunction
         { foreach (var service in services) { service.HealthUrl = healthUrl; } }
         using var client = new HttpClient
         { Timeout = TimeSpan.FromSeconds(10) };
+        var projectId = Environment.GetEnvironmentVariable("GOOGLE_CLOUD_PROJECT");
+        var cloudRunHealthUrl = Environment.GetEnvironmentVariable("MONITORED_HEALTH_URL");
+        if (!string.IsNullOrWhiteSpace(projectId) && !string.IsNullOrWhiteSpace(cloudRunHealthUrl))
+        {
+            var audience = new Uri(cloudRunHealthUrl).GetLeftPart(UriPartial.Authority);
+            var credential = await GoogleCredential.GetApplicationDefaultAsync();
+            var oidcToken = await credential.GetOidcTokenAsync(OidcTokenOptions.FromTargetAudience(audience));
+            var token = await oidcToken.GetAccessTokenAsync();
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        }
 
         var repository = new IncidentRepository();
         var webhookUrl = Environment.GetEnvironmentVariable("WEBHOOK_URL");
@@ -31,9 +42,12 @@ public class MonitoringFunction : IHttpFunction
 
         var remediation = document.RootElement.GetProperty("Remediation");
 
-        var remediationEnabled = remediation.GetProperty("Enabled").GetBoolean();
+        var enabledSetting = Environment.GetEnvironmentVariable("REMEDIATION_ENABLED");
 
-        var verifiedRevision = remediation.GetProperty("VerifiedRevision").GetString();
+        var remediationEnabled = bool.TryParse(enabledSetting, out var enabled) ? enabled : remediation.GetProperty("Enabled").GetBoolean();
+
+        var verifiedRevision = Environment.GetEnvironmentVariable("VERIFIED_REVISION") ?? remediation.GetProperty("VerifiedRevision").GetString();
+
 
 
         if (remediationEnabled && !string.IsNullOrWhiteSpace(verifiedRevision))
@@ -51,7 +65,21 @@ public class MonitoringFunction : IHttpFunction
             {
                 if (!repository.GetAll().Any(x => x.ServiceName == service.Name && x.Status == "Unhealthy")) continue;
                 if (string.IsNullOrWhiteSpace(service.ProjectId) || string.IsNullOrWhiteSpace(service.Region)) continue;
-                var rollbackCompleted = await rollback.TryRollbackAsync(cloudRun,attempts, healthCheck, service, verifiedRevision);
+
+                var rollbackServiceName = Environment.GetEnvironmentVariable("ROLLBACK_SERVICE_NAME");
+
+                if (string.IsNullOrWhiteSpace(rollbackServiceName)) continue;
+
+                var cloudRunService = new MonitoredService
+                {
+                    Name = rollbackServiceName,
+                    ProjectId = projectIdForRollback,
+                    Region = service.Region,
+                    HealthUrl = service.HealthUrl
+                };
+
+                var rollbackCompleted = await rollback.TryRollbackAsync(cloudRun, attempts, healthCheck, cloudRunService, verifiedRevision);
+
                 if (rollbackCompleted)
                 {
                     var incident = repository.GetAll().FirstOrDefault(x => x.ServiceName == service.Name &&x.Status == "Unhealthy");
@@ -61,7 +89,6 @@ public class MonitoringFunction : IHttpFunction
             }
         }
 
-        var projectId = Environment.GetEnvironmentVariable("GOOGLE_CLOUD_PROJECT");
 
         if (!string.IsNullOrWhiteSpace(projectId))
         {
